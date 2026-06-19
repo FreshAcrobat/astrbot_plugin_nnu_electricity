@@ -1,14 +1,25 @@
-# astrbot-plugin-helloworld
+# NNU Electricity Bill Inquiry Extensions
 
-AstrBot 插件模板 / A template plugin for AstrBot plugin feature
+这是用于查询南京师范大学学生公寓电费的 AstrBot 插件。
 
-> [!NOTE]
-> This repo is just a template of [AstrBot](https://github.com/AstrBotDevs/AstrBot) Plugin.
-> 
-> [AstrBot](https://github.com/AstrBotDevs/AstrBot) is an agentic assistant for both personal and group conversations. It can be deployed across dozens of mainstream instant messaging platforms, including QQ, Telegram, Feishu, DingTalk, Slack, LINE, Discord, Matrix, etc. In addition, it provides a reliable and extensible conversational AI infrastructure for individuals, developers, and teams. Whether you need a personal AI companion, an intelligent customer support agent, an automation assistant, or an enterprise knowledge base, AstrBot enables you to quickly build AI applications directly within your existing messaging workflows.
+## 支持的范围
 
-# Supports
+支持查询仙林校区除博士楼，青教以外的所有宿舍楼，暂不支持随园校区。
 
-- [AstrBot Repo](https://github.com/AstrBotDevs/AstrBot)
-- [AstrBot Plugin Development Docs (Chinese)](https://docs.astrbot.app/dev/star/plugin-new.html)
-- [AstrBot Plugin Development Docs (English)](https://docs.astrbot.app/en/dev/star/plugin-new.html)
+## 使用方法
+
+- bill <楼栋> <宿舍> - 查询指定宿舍电费
+- b - 快速查询
+- bill sub <楼栋> <宿舍> - 订阅每日低电量提醒
+- bill unsub - 取消订阅
+- bill on/off - 启用/禁用当前群组响应
+
+## ToDo
+
+- 完善订阅的处理逻辑
+
+## 免责声明
+
+本插件仅供学习与交流使用，使用过程中产生的风险由使用者自行承担。
+为了遵守网络安全相关法律法规，本仓库已对所有敏感信息进行脱敏处理。
+本插件的部分代码借助 AI 编程工具生成。
