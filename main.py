@@ -245,7 +245,7 @@ class ElectricityPlugin(Star):
             return False, "💥 内部错误，请联系管理员查看日志。", 0.0
 
     async def _perform_daily_checks(self):
-        """执行具体的订阅检查与推送逻辑（原循环体内容）"""
+        """订阅检查与推送逻辑"""
         logger.info("开始执行电费定时订阅检查...")
         for session_id, info in self.subs.items():
             building = info.get("building")
