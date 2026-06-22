@@ -1,6 +1,6 @@
 name: astrbot_plugin_nnu_electricity
 display_name: 南京师范大学电费插件
 desc: 用于查询南师大公寓电费的 AstrBot 插件
-version: v1.0.0
+version: v1.0.1
 author: FreshAcrobat
 repo: https://github.com/FreshAcrobat/astrbot_plugin_nnu_electricity
