@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, Tuple, List
 
 import httpx
-from astrbot.api.event import filter, AstrMessageEvent
+from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.api import logger
 from astrbot.api.message_components import Plain
@@ -126,8 +126,8 @@ class ElectricityPlugin(Star):
         self.cache_file = plugin_data_dir / "dongqu_cache.json"
 
         self.dongqu_cache = {}
-        self.subs = {}  # 订阅信息: {session_id: {"building": x, "room": y}}
-        self.blacklist = []  # 黑名单列表: [session_id_1, session_id_2...]
+        self.subs = {}  # 订阅信息: {umo: {"building": x, "room": y}}
+        self.blacklist = []  # 黑名单列表: [umo_1, umo_2...]
         self.last_queries = {}  # 持久化用户查询缓存: {user_id: {"building": x, "room": y}}
 
         self.load_dongqu_cache()
@@ -247,19 +247,23 @@ class ElectricityPlugin(Star):
     async def _perform_daily_checks(self):
         """订阅检查与推送逻辑"""
         logger.info("开始执行电费定时订阅检查...")
-        for session_id, info in self.subs.items():
+        for umo, info in self.subs.items():
             building = info.get("building")
             room = info.get("room")
 
             success, msg, balance = await self.fetch_balance(building, room)
+            logger.info(f"查询到 {msg}")
             if success and balance < THRESHOLD:
                 try:
                     await self.context.send_message(
-                        session_id,
-                        [Plain(f"⚠️ 【电费不足提醒】\n{msg}\n请及时充值以免断电！")],
+                        umo,
+                        MessageChain().message(
+                            f"【电费不足提醒】\n{msg}\n请及时充值以免断电！"
+                        ),
                     )
                 except Exception as e:
-                    logger.error(f"向会话 {session_id} 发送电费提醒失败: {e}")
+                    logger.error(f"向会话 {umo} 发送电费提醒失败: {e}")
+            await asyncio.sleep(5)
 
     async def daily_check_loop(self):
         """定时循环"""
@@ -278,7 +282,7 @@ class ElectricityPlugin(Star):
 
     @filter.command("bill")
     async def command_bill(self, event: AstrMessageEvent):
-        session_id = event.message_obj.session_id
+        umo = event.unified_msg_origin
 
         # ---------------- 1. 会话黑名单检查 ----------------
         message_text = event.message_str.strip()
@@ -288,20 +292,20 @@ class ElectricityPlugin(Star):
         if len(parts) == 2:
             action = parts[1].lower()
             if action == "off":
-                if session_id not in self.blacklist:
-                    self.blacklist.append(session_id)
+                if umo not in self.blacklist:
+                    self.blacklist.append(umo)
                     self.save_plugin_data()
                 yield event.plain_result("🚫 已在此会话禁用电费查询指令。")
                 return
             elif action == "on":
-                if session_id in self.blacklist:
-                    self.blacklist.remove(session_id)
+                if umo in self.blacklist:
+                    self.blacklist.remove(umo)
                     self.save_plugin_data()
                 yield event.plain_result("✅ 已在此会话启用电费查询指令。")
                 return
 
         # 如果当前会话在黑名单中，静默退出
-        if session_id in self.blacklist:
+        if umo in self.blacklist:
             return
 
         # ---------------- 2. 指令解析与路由 ----------------
@@ -335,7 +339,7 @@ class ElectricityPlugin(Star):
             yield event.plain_result(f"🔍 正在验证宿舍信息，请稍候……")
             success, msg, _ = await self.fetch_balance(int(building_str), room_str)
             if success:
-                self.subs[session_id] = {
+                self.subs[umo] = {
                     "building": int(building_str),
                     "room": room_str,
                 }
@@ -349,8 +353,8 @@ class ElectricityPlugin(Star):
 
         # 处理退订指令
         elif action_or_building.lower() == "unsub":
-            if session_id in self.subs:
-                del self.subs[session_id]
+            if umo in self.subs:
+                del self.subs[umo]
                 self.save_plugin_data()
                 yield event.plain_result("✅ 已成功取消电量提醒订阅。")
             else:
@@ -388,11 +392,11 @@ class ElectricityPlugin(Star):
     @filter.command("b")
     async def quick_query(self, event: AstrMessageEvent):
         """快速查询当前用户上次调用的宿舍"""
-        session_id = event.message_obj.session_id
+        umo = event.unified_msg_origin
         user_id = str(event.message_obj.sender.user_id)
 
         # 黑名单拦截 (依然保留群聊维度的黑名单控制)
-        if session_id in self.blacklist:
+        if umo in self.blacklist:
             return
 
         # 根据用户 UID 查找历史记录
