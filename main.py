@@ -24,6 +24,8 @@ if os.path.exists(CONFIG_FILE):
         SECRET_KEY = config.get("SECRET_KEY", "")
         GETBALANCE_URL = config.get("GETBALANCE_URL", "")
         REQUEST_TIMEOUT = config.get("REQUEST_TIMEOUT", 10)
+        CHECK_HOUR = config.get("CHECK_HOUR", 7)
+        CHECK_MINUTE = config.get("CHECK_MINUTE", 0)
         # 新增配置读取
         THRESHOLD = config.get("THRESHOLD", 30.0)
         DONGQU_ITEM_NUM = config.get("DONGQU_ITEM_NUM", "34")
@@ -269,7 +271,9 @@ class ElectricityPlugin(Star):
         """定时循环"""
         while True:
             now = datetime.now()
-            target = now.replace(hour=7, minute=0, second=0, microsecond=0)
+            target = now.replace(
+                hour=CHECK_HOUR, minute=CHECK_MINUTE, second=0, microsecond=0
+            )
 
             if now >= target:
                 target += timedelta(days=1)
@@ -345,7 +349,7 @@ class ElectricityPlugin(Star):
                 }
                 self.save_plugin_data()
                 yield event.plain_result(
-                    f"✅ 订阅成功！当前余额：{msg.split('：')[1]}\n每天早7点若电量低于 {THRESHOLD} 度将自动提醒。"
+                    f"✅ 订阅成功！当前余额：{msg.split('：')[1]}\n每天{CHECK_HOUR}点{CHECK_MINUTE}分若电量低于 {THRESHOLD} 度将自动提醒。"
                 )
             else:
                 yield event.plain_result(f"❌ 订阅失败，原因：\n{msg}")
