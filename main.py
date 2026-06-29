@@ -249,23 +249,44 @@ class ElectricityPlugin(Star):
     async def _perform_daily_checks(self):
         """订阅检查与推送逻辑"""
         logger.info("开始执行电费定时订阅检查...")
-        for umo, info in self.subs.items():
-            building = info.get("building")
-            room = info.get("room")
 
-            success, msg, balance = await self.fetch_balance(building, room)
-            logger.info(f"查询到 {msg}")
-            if success and balance < THRESHOLD:
+        query_cache = {}
+
+        for umo, rooms in self.subs.items():
+            if not rooms:
+                continue
+
+            low_balance_msgs = []
+
+            for room_info in rooms:
+                building = room_info.get("building")
+                room = room_info.get("room")
+                cache_key = (building, room)
+
+                if not building or not room:
+                    logger.warning(f"会话 {umo} 的订阅信息不完整，跳过。")
+                    continue
+
+                
+                if cache_key not in query_cache:
+                    query_cache[cache_key] = await self.fetch_balance(building, room)
+                    await asyncio.sleep(5)  # 避免请求过快
+
+                success, msg, balance = query_cache[cache_key]
+                logger.info(f"从缓存中查询到 {msg}")
+
+                if success and balance < THRESHOLD:
+                    low_balance_msgs.append(msg)
+
+            if low_balance_msgs:
                 try:
+                    combined_msg = "【电费不足提醒】\n" + "\n".join(low_balance_msgs) + "\n请及时充值以免断电！"
                     await self.context.send_message(
                         umo,
-                        MessageChain().message(
-                            f"【电费不足提醒】\n{msg}\n请及时充值以免断电！"
-                        ),
+                        MessageChain().message(combined_msg),
                     )
                 except Exception as e:
                     logger.error(f"向会话 {umo} 发送电费提醒失败: {e}")
-            await asyncio.sleep(5)
 
     async def daily_check_loop(self):
         """定时循环"""
@@ -319,7 +340,7 @@ class ElectricityPlugin(Star):
                 "• /bill <楼栋> <宿舍> - 查询电费\n"
                 "• /b - 快速查询上次查找的宿舍\n"
                 "• /bill sub <楼栋> <宿舍> - 订阅每日低电量提醒\n"
-                "• /bill unsub - 取消订阅\n"
+                "• /bill unsub <楼栋> <宿舍> - 取消订阅\n"
                 "• /bill on/off - 启用/禁用当前群组响应"
             )
             yield event.plain_result(help_msg)
@@ -343,27 +364,51 @@ class ElectricityPlugin(Star):
             yield event.plain_result(f"🔍 正在验证宿舍信息，请稍候……")
             success, msg, _ = await self.fetch_balance(int(building_str), room_str)
             if success:
-                self.subs[umo] = {
-                    "building": int(building_str),
-                    "room": room_str,
-                }
-                self.save_plugin_data()
-                yield event.plain_result(
-                    f"✅ 订阅成功！当前余额：{msg.split('：')[1]}\n每天{CHECK_HOUR}点{CHECK_MINUTE}分若电量低于 {THRESHOLD} 度将自动提醒。"
-                )
+                if umo not in self.subs:
+                    self.subs[umo] = []
+
+                new_sub = {"building": int(building_str), "room": room_str}
+                if new_sub not in self.subs[umo]:
+                    self.subs[umo].append(new_sub)
+                    self.save_plugin_data()
+                    yield event.plain_result(
+                        f"✅ 订阅成功！当前余额：{msg.split('：')[1]}\n该会话已订阅 {len(self.subs[umo])} 个宿舍。\n每天{CHECK_HOUR}点{CHECK_MINUTE}分若电量低于 {THRESHOLD} 度将自动提醒。"
+                    )
+                else:
+                    yield event.plain_result(
+                        f"ℹ️ 该宿舍已在订阅列表中。\n当前余额：{msg.split('：')[1]}"
+                    )
             else:
                 yield event.plain_result(f"❌ 订阅失败，原因：\n{msg}")
             return
 
+
         # 处理退订指令
         elif action_or_building.lower() == "unsub":
+            if len(parts) < 4:
+                yield event.plain_result(
+                    "❌ 参数不足！请使用格式：/bill unsub 楼栋号 宿舍号"
+                )
+                return
+            building_str, room_str = parts[2], parts[3]
+            if not building_str.isdigit():
+                yield event.plain_result("❌ 楼栋号必须是数字！")
+                return
+            
             if umo in self.subs:
-                del self.subs[umo]
-                self.save_plugin_data()
-                yield event.plain_result("✅ 已成功取消电量提醒订阅。")
+                target_sub = {"building": int(building_str), "room": room_str}
+                if target_sub in self.subs[umo]:
+                    self.subs[umo].remove(target_sub)
+                    if not self.subs[umo]:  # 如果列表为空，删除该会话的订阅记录
+                        del self.subs[umo]
+                    self.save_plugin_data()
+                    yield event.plain_result(f"✅ 已成功取消订阅 {building_str}栋{room_str}室 的电量提醒。")
+                else:
+                    yield event.plain_result(f"ℹ️ 该宿舍未在订阅列表中。")
             else:
-                yield event.plain_result("ℹ️ 当前会话尚未订阅提醒。")
+                yield event.plain_result("ℹ️ 当前会话尚未订阅任何提醒。")
             return
+        
 
         # ---------------- 3. 常规电费查询 ----------------
         if len(parts) < 3:
