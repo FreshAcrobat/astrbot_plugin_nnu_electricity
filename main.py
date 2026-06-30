@@ -116,6 +116,8 @@ class ElectricityPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
 
+        self._data_lock = asyncio.Lock()
+
         self.config = config
         self.check_hour = self.config.get("CHECK_HOUR", 7)
         self.check_minute = self.config.get("CHECK_MINUTE", 0)
@@ -154,6 +156,23 @@ class ElectricityPlugin(Star):
                 f"东区缓存文件 {self.cache_file} 不存在，东区查询功能可能受限。"
             )
 
+    def _get_data_snapshot(self) -> Dict[str, Any]:
+        """必须在持有 _data_lock 时调用"""
+        return {
+            "subs": dict(self.subs),
+            "blacklist": list(self.blacklist),
+            "last_queries": dict(self.last_queries),
+        }
+
+    async def _save_snapshot(self, snapshot: Dict[str, Any]) -> bool:
+        """异步保存快照到文件（不持锁）"""
+        try:
+            await asyncio.to_thread(self._write_data_to_file, snapshot)
+            return True
+        except Exception as e:
+            logger.error(f"保存插件数据失败: {e}")
+            return False
+
     def load_plugin_data(self):
         """加载订阅、黑名单和用户查询记录"""
         # 替换为 self.data_file
@@ -168,27 +187,34 @@ class ElectricityPlugin(Star):
                     f"成功加载插件数据：{len(self.subs)} 个订阅，{len(self.blacklist)} 个黑名单，{len(self.last_queries)} 条查询记录。"
                 )
             except Exception as e:
-                logger.error(f"加载插件数据失败: {e}")
-        else:
-            self.save_plugin_data()
+                logger.exception("加载插件数据失败")
 
-    def save_plugin_data(self):
-        """保存订阅、黑名单和用户查询记录"""
+                self.subs = {}
+                self.blacklist = []
+                self.last_queries = {}
+
+    def _write_data_to_file(self, data: Dict[str, Any]):
+        """同步写入到文件"""
+
+        self.data_file.parent.mkdir(parents=True, exist_ok=True)
+
+        tmp_file = self.data_file.with_suffix(self.data_file.suffix + ".tmp")
+
         try:
-            # 替换为 self.data_file
-            with open(self.data_file, "w", encoding="utf-8") as f:
-                json.dump(
-                    {
-                        "subs": self.subs,
-                        "blacklist": self.blacklist,
-                        "last_queries": self.last_queries,
-                    },
-                    f,
-                    ensure_ascii=False,
-                    indent=4,
-                )
-        except Exception as e:
-            logger.error(f"保存插件数据失败: {e}")
+            with open(tmp_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=4)
+
+                f.flush()
+                os.fsync(f.fileno())
+
+            os.replace(tmp_file, self.data_file)
+            logger.info(f"插件数据已成功保存到 {self.data_file}")
+        finally:
+            if tmp_file.exists():
+                try:
+                    tmp_file.unlink()
+                except Exception:
+                    pass
 
     def resolve_dorm_info(self, building: int, room_str: str) -> Tuple[str, str, str]:
         # 1. 东区逻辑 (1-6栋)
@@ -256,7 +282,10 @@ class ElectricityPlugin(Star):
 
         query_cache = {}
 
-        for umo, rooms in self.subs.items():
+        async with self._data_lock:
+            subs_copy = {umo: rooms.copy() for umo, rooms in self.subs.items()}
+
+        for umo, rooms in subs_copy.items():
             if not rooms:
                 continue
 
@@ -314,7 +343,10 @@ class ElectricityPlugin(Star):
 
                 await asyncio.sleep(wait_seconds)
 
-                await self._perform_daily_checks()
+                try:
+                    await self._perform_daily_checks()
+                except Exception as e:
+                    logger.exception("执行每日检查时发生错误，将在下次继续尝试。")
         except asyncio.CancelledError:
             logger.info("定时检查任务已取消。")
             raise
@@ -331,20 +363,33 @@ class ElectricityPlugin(Star):
         if len(parts) == 2:
             action = parts[1].lower()
             if action == "off":
-                if umo not in self.blacklist:
-                    self.blacklist.append(umo)
-                    self.save_plugin_data()
+                async with self._data_lock:
+                    if umo not in self.blacklist:
+                        self.blacklist.append(umo)
+                        snapshot = self._get_data_snapshot()
+                    else:
+                        snapshot = None
+                if snapshot:
+                    await self._save_snapshot(snapshot)
                 yield event.plain_result("🚫 已在此会话禁用电费查询指令。")
                 return
             elif action == "on":
-                if umo in self.blacklist:
-                    self.blacklist.remove(umo)
-                    self.save_plugin_data()
+                async with self._data_lock:
+                    if umo in self.blacklist:
+                        self.blacklist.remove(umo)
+                        snapshot = self._get_data_snapshot()
+                    else:
+                        snapshot = None
+                if snapshot:
+                    await self._save_snapshot(snapshot)
                 yield event.plain_result("✅ 已在此会话启用电费查询指令。")
                 return
 
         # 如果当前会话在黑名单中，静默退出
-        if umo in self.blacklist:
+        async with self._data_lock:
+            blocked = umo in self.blacklist
+        if blocked:
+            yield event.plain_result("⚠️ 当前会话已禁用电费查询指令，请联系管理员启用。")
             return
 
         # ---------------- 2. 指令解析与路由 ----------------
@@ -374,27 +419,45 @@ class ElectricityPlugin(Star):
                 yield event.plain_result("❌ 楼栋号必须是数字！")
                 return
 
+            building = int(building_str)
+
             # 先试探性查询一次确认存在
             yield event.plain_result(f"🔍 正在验证宿舍信息，请稍候……")
-            success, msg, _ = await self.fetch_balance(int(building_str), room_str)
-            if success:
+            success, msg, balance = await self.fetch_balance(building, room_str)
+            if not success:
+                yield event.plain_result(f"❌ 订阅失败，原因：\n{msg}")
+                return
+
+            new_sub = {"building": building, "room": room_str}
+
+            async with self._data_lock:
                 if umo not in self.subs:
                     self.subs[umo] = []
 
-                new_sub = {"building": int(building_str), "room": room_str}
                 if new_sub not in self.subs[umo]:
                     self.subs[umo].append(new_sub)
-                    self.save_plugin_data()
+                    snapshot = self._get_data_snapshot()
+                    added = True
+                else:
+                    snapshot = None
+                    added = False
+
+            if added:
+                saved = await self._save_snapshot(snapshot)
+                if saved:
                     yield event.plain_result(
-                        f"✅ 订阅成功！当前余额：{msg.split('：')[1]}\n该会话已订阅 {len(self.subs[umo])} 个宿舍。\n每天{self.check_hour}点{self.check_minute}分若电量低于 {self.threshold} 度将自动提醒。"
+                        f"✅ 订阅成功！当前余额：{balance} 度\n该会话已订阅 {len(self.subs[umo])} 个宿舍。\n每天{self.check_hour}点{self.check_minute}分若电量低于 {self.threshold} 度将自动提醒。"
                     )
                 else:
                     yield event.plain_result(
-                        f"ℹ️ 该宿舍已在订阅列表中。\n当前余额：{msg.split('：')[1]}"
+                        "⚠️ 订阅成功，但保存数据失败，请联系管理员。"
                     )
+                return
             else:
-                yield event.plain_result(f"❌ 订阅失败，原因：\n{msg}")
-            return
+                yield event.plain_result(
+                    f"ℹ️ 该宿舍已在订阅列表中。\n当前余额：{balance} 度"
+                )
+                return
 
         # 处理退订指令
         elif action_or_building.lower() == "unsub":
@@ -408,21 +471,33 @@ class ElectricityPlugin(Star):
                 yield event.plain_result("❌ 楼栋号必须是数字！")
                 return
 
-            if umo in self.subs:
-                target_sub = {"building": int(building_str), "room": room_str}
-                if target_sub in self.subs[umo]:
+            building = int(building_str)
+            target_sub = {"building": building, "room": room_str}
+
+            async with self._data_lock:
+                if umo in self.subs and target_sub in self.subs[umo]:
                     self.subs[umo].remove(target_sub)
                     if not self.subs[umo]:  # 如果列表为空，删除该会话的订阅记录
                         del self.subs[umo]
-                    self.save_plugin_data()
+                    snapshot = self._get_data_snapshot()
+                    removed = True
+                else:
+                    snapshot = None
+                    removed = False
+            if removed:
+                saved = await self._save_snapshot(snapshot)
+                if saved:
                     yield event.plain_result(
                         f"✅ 已成功取消订阅 {building_str}栋{room_str}室 的电量提醒。"
                     )
                 else:
-                    yield event.plain_result(f"ℹ️ 该宿舍未在订阅列表中。")
+                    yield event.plain_result(
+                        "⚠️ 取消订阅成功，但保存数据失败，请联系管理员。"
+                    )
+                return
             else:
-                yield event.plain_result("ℹ️ 当前会话尚未订阅任何提醒。")
-            return
+                yield event.plain_result(f"ℹ️ 该宿舍未在订阅列表中。")
+                return
 
         # ---------------- 3. 常规电费查询 ----------------
         if len(parts) < 3:
@@ -440,17 +515,19 @@ class ElectricityPlugin(Star):
             return
 
         building = int(building_str)
-
-        # 获取发送者的 UID
         user_id = str(event.message_obj.sender.user_id)
 
-        # 缓存本次调用的参数到个人记录，并写入持久化文件
-        self.last_queries[user_id] = {"building": building, "room": room_str}
-        self.save_plugin_data()
-
         yield event.plain_result("🔍 正在查询电费，请稍候……")
-        success, msg, _ = await self.fetch_balance(building, room_str)
+        success, msg, balance = await self.fetch_balance(building, room_str)
+
+        if success:
+            async with self._data_lock:
+                self.last_queries[user_id] = {"building": building, "room": room_str}
+                snapshot = self._get_data_snapshot()
+            await self._save_snapshot(snapshot)
+
         yield event.plain_result(msg)
+        return
 
     @filter.command("b")
     async def quick_query(self, event: AstrMessageEvent):
@@ -459,23 +536,28 @@ class ElectricityPlugin(Star):
         user_id = str(event.message_obj.sender.user_id)
 
         # 黑名单拦截 (依然保留群聊维度的黑名单控制)
-        if umo in self.blacklist:
+        async with self._data_lock:
+            blocked = umo in self.blacklist
+        if blocked:
+            yield event.plain_result("⚠️ 当前会话已禁用电费查询指令，请联系管理员启用。")
             return
 
-        # 根据用户 UID 查找历史记录
-        if user_id not in self.last_queries:
-            yield event.plain_result(
-                "❌ 您还没有历史查询记录，请先使用 /bill <楼栋> <宿舍> 查询一次。"
-            )
-            return
+        async with self._data_lock:
+            if user_id not in self.last_queries:
+                yield event.plain_result(
+                    "❌ 您还没有历史查询记录，请先使用 /bill <楼栋> <宿舍> 查询一次。"
+                )
+                return
 
-        record = self.last_queries[user_id]
+            record = self.last_queries[user_id].copy()
+
         building = record["building"]
         room_str = record["room"]
 
         yield event.plain_result("⚡ 正在快速查询您上次记录的宿舍...")
         success, msg, _ = await self.fetch_balance(building, room_str)
         yield event.plain_result(msg)
+        return
 
     async def terminate(self):
         """插件卸载时的清理工作"""
