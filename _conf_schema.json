@@ -1,0 +1,22 @@
+{
+    "CHECK_HOUR": {
+        "description": "每日定时检查的小时（0-23）",
+        "type": "int",
+        "default": 7
+    },
+    "CHECK_MINUTE": {
+        "description": "每日定时检查的分钟（0-59）",
+        "type": "int",
+        "default": 0
+    },
+    "REQUEST_TIMEOUT": {
+        "description": "HTTP 请求超时时间（秒）",
+        "type": "int",
+        "default": 10
+    },
+    "THRESHOLD": {
+        "description": "低电量提醒阈值（度）",
+        "type": "float",
+        "default": 30.0
+    }
+}

@@ -10,8 +10,7 @@ from typing import Dict, Any, Tuple, List
 import httpx
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, StarTools
-from astrbot.api import logger
-from astrbot.api.message_components import Plain
+from astrbot.api import logger, AstrBotConfig
 
 # ----------------------------- 配置 -----------------------------
 
@@ -23,11 +22,6 @@ if os.path.exists(CONFIG_FILE):
         config = json.load(f)
         SECRET_KEY = config.get("SECRET_KEY", "")
         GETBALANCE_URL = config.get("GETBALANCE_URL", "")
-        REQUEST_TIMEOUT = config.get("REQUEST_TIMEOUT", 10)
-        CHECK_HOUR = config.get("CHECK_HOUR", 7)
-        CHECK_MINUTE = config.get("CHECK_MINUTE", 0)
-        # 新增配置读取
-        THRESHOLD = config.get("THRESHOLD", 30.0)
         DONGQU_ITEM_NUM = config.get("DONGQU_ITEM_NUM", "34")
         ZONE_CONFIGS = config.get("ZONE_RANGES", [])  # 列表
         SPECIAL_BUILDINGS_RAW = config.get("SPECIAL_BUILDINGS", {})
@@ -62,7 +56,9 @@ def generate_sign(params: Dict[str, Any], secret_key: str) -> str:
     return hashlib.md5(raw_str.encode("utf-8")).hexdigest()
 
 
-async def query_balance(item_num: str, node_id: str) -> Dict[str, Any]:
+async def query_balance(
+    item_num: str, node_id: str, timeout: int = 10
+) -> Dict[str, Any]:
     """查询电费余额"""
     current_time = time.strftime("%Y%m%d%H%M%S")
     params = {
@@ -72,7 +68,7 @@ async def query_balance(item_num: str, node_id: str) -> Dict[str, Any]:
     }
     sign = generate_sign(params, SECRET_KEY)
     payload = {**params, "sign": sign}
-    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.post(GETBALANCE_URL, json=payload)
         resp.raise_for_status()
         return resp.json()
@@ -117,8 +113,14 @@ def parse_room_normal(building: int, room_str: str, rule_type: str) -> Dict[str,
 
 
 class ElectricityPlugin(Star):
-    def __init__(self, context: Context):
+    def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
+
+        self.config = config
+        self.check_hour = self.config.get("CHECK_HOUR", 7)
+        self.check_minute = self.config.get("CHECK_MINUTE", 0)
+        self.request_timeout = self.config.get("REQUEST_TIMEOUT", 10)
+        self.threshold = self.config.get("THRESHOLD", 30.0)
 
         # 1. 使用官方 API 获取持久化数据目录 (返回的是 pathlib.Path 对象)
         plugin_data_dir = StarTools.get_data_dir(self.name)
@@ -222,7 +224,9 @@ class ElectricityPlugin(Star):
         """核心查询方法，返回 (是否成功, 提示/错误信息, 剩余电量)"""
         try:
             item_num, node_id, display_name = self.resolve_dorm_info(building, room_str)
-            result = await query_balance(item_num, node_id)
+            result = await query_balance(
+                item_num, node_id, timeout=self.request_timeout
+            )
 
             if result.get("code") == "1":
                 used_amp_str = result.get("data", {}).get("usedAmp", "0")
@@ -267,7 +271,6 @@ class ElectricityPlugin(Star):
                     logger.warning(f"会话 {umo} 的订阅信息不完整，跳过。")
                     continue
 
-                
                 if cache_key not in query_cache:
                     query_cache[cache_key] = await self.fetch_balance(building, room)
                     await asyncio.sleep(5)  # 避免请求过快
@@ -275,12 +278,16 @@ class ElectricityPlugin(Star):
                 success, msg, balance = query_cache[cache_key]
                 logger.info(f"从缓存中查询到 {msg}")
 
-                if success and balance < THRESHOLD:
+                if success and balance < self.threshold:
                     low_balance_msgs.append(msg)
 
             if low_balance_msgs:
                 try:
-                    combined_msg = "【电费不足提醒】\n" + "\n".join(low_balance_msgs) + "\n请及时充值以免断电！"
+                    combined_msg = (
+                        "【电费不足提醒】\n"
+                        + "\n".join(low_balance_msgs)
+                        + "\n请及时充值以免断电！"
+                    )
                     await self.context.send_message(
                         umo,
                         MessageChain().message(combined_msg),
@@ -293,7 +300,7 @@ class ElectricityPlugin(Star):
         while True:
             now = datetime.now()
             target = now.replace(
-                hour=CHECK_HOUR, minute=CHECK_MINUTE, second=0, microsecond=0
+                hour=self.check_hour, minute=self.check_minute, second=0, microsecond=0
             )
 
             if now >= target:
@@ -372,7 +379,7 @@ class ElectricityPlugin(Star):
                     self.subs[umo].append(new_sub)
                     self.save_plugin_data()
                     yield event.plain_result(
-                        f"✅ 订阅成功！当前余额：{msg.split('：')[1]}\n该会话已订阅 {len(self.subs[umo])} 个宿舍。\n每天{CHECK_HOUR}点{CHECK_MINUTE}分若电量低于 {THRESHOLD} 度将自动提醒。"
+                        f"✅ 订阅成功！当前余额：{msg.split('：')[1]}\n该会话已订阅 {len(self.subs[umo])} 个宿舍。\n每天{self.check_hour}点{self.check_minute}分若电量低于 {self.threshold} 度将自动提醒。"
                     )
                 else:
                     yield event.plain_result(
@@ -381,7 +388,6 @@ class ElectricityPlugin(Star):
             else:
                 yield event.plain_result(f"❌ 订阅失败，原因：\n{msg}")
             return
-
 
         # 处理退订指令
         elif action_or_building.lower() == "unsub":
@@ -394,7 +400,7 @@ class ElectricityPlugin(Star):
             if not building_str.isdigit():
                 yield event.plain_result("❌ 楼栋号必须是数字！")
                 return
-            
+
             if umo in self.subs:
                 target_sub = {"building": int(building_str), "room": room_str}
                 if target_sub in self.subs[umo]:
@@ -402,13 +408,14 @@ class ElectricityPlugin(Star):
                     if not self.subs[umo]:  # 如果列表为空，删除该会话的订阅记录
                         del self.subs[umo]
                     self.save_plugin_data()
-                    yield event.plain_result(f"✅ 已成功取消订阅 {building_str}栋{room_str}室 的电量提醒。")
+                    yield event.plain_result(
+                        f"✅ 已成功取消订阅 {building_str}栋{room_str}室 的电量提醒。"
+                    )
                 else:
                     yield event.plain_result(f"ℹ️ 该宿舍未在订阅列表中。")
             else:
                 yield event.plain_result("ℹ️ 当前会话尚未订阅任何提醒。")
             return
-        
 
         # ---------------- 3. 常规电费查询 ----------------
         if len(parts) < 3:
