@@ -297,20 +297,27 @@ class ElectricityPlugin(Star):
 
     async def daily_check_loop(self):
         """定时循环"""
-        while True:
-            now = datetime.now()
-            target = now.replace(
-                hour=self.check_hour, minute=self.check_minute, second=0, microsecond=0
-            )
+        try:
+            while True:
+                now = datetime.now()
+                target = now.replace(
+                    hour=self.check_hour,
+                    minute=self.check_minute,
+                    second=0,
+                    microsecond=0,
+                )
 
-            if now >= target:
-                target += timedelta(days=1)
+                if now >= target:
+                    target += timedelta(days=1)
 
-            wait_seconds = (target - now).total_seconds()
+                wait_seconds = (target - now).total_seconds()
 
-            await asyncio.sleep(wait_seconds)
+                await asyncio.sleep(wait_seconds)
 
-            await self._perform_daily_checks()
+                await self._perform_daily_checks()
+        except asyncio.CancelledError:
+            logger.info("定时检查任务已取消。")
+            raise
 
     @filter.command("bill")
     async def command_bill(self, event: AstrMessageEvent):
@@ -472,6 +479,10 @@ class ElectricityPlugin(Star):
 
     async def terminate(self):
         """插件卸载时的清理工作"""
-        if hasattr(self, "timer_task") and not self.timer_task.done():
+        if hasattr(self, "timer_task"):
             self.timer_task.cancel()
+            try:
+                await self.timer_task
+            except asyncio.CancelledError:
+                pass
         logger.info("电费查询插件已卸载，定时任务已终止。")
