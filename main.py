@@ -152,7 +152,7 @@ class ElectricityPlugin(Star):
             except Exception as e:
                 logger.error(f"加载东区缓存表失败: {e}")
         else:
-            logger.warning(
+            logger.error(
                 f"东区缓存文件 {self.cache_file} 不存在，东区查询功能可能受限。"
             )
 
@@ -219,6 +219,11 @@ class ElectricityPlugin(Star):
     def resolve_dorm_info(self, building: int, room_str: str) -> Tuple[str, str, str]:
         # 1. 东区逻辑 (1-6栋)
         if 1 <= building <= 6:
+            if not self.dongqu_cache:
+                raise ValueError(
+                    "东区缓存未加载，请检查插件数据目录下的 dongqu_cache.json 文件"
+                )
+
             if not room_str.isdigit() or len(room_str) != 3:
                 raise ValueError("东区宿舍号必须是三位数字")
 
@@ -351,6 +356,26 @@ class ElectricityPlugin(Star):
             logger.info("定时检查任务已取消。")
             raise
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("suball")
+    async def test(self, event: AstrMessageEvent):
+        """列出所有会话的订阅"""
+        async with self._data_lock:
+            subs_copy = {umo: rooms.copy() for umo, rooms in self.subs.items()}
+
+        if not subs_copy:
+            yield event.plain_result("ℹ️ 当前没有任何订阅。")
+            return
+
+        msg_lines = ["📋 当前所有会话的订阅列表:"]
+        for umo, rooms in subs_copy.items():
+            msg_lines.append(f"{umo}:")
+            for r in rooms:
+                msg_lines.append(f"- {r['building']}栋{r['room']}室")
+
+        yield event.plain_result("\n".join(msg_lines))
+        return
+
     @filter.command("bill")
     async def command_bill(self, event: AstrMessageEvent):
         umo = event.unified_msg_origin
@@ -443,6 +468,8 @@ class ElectricityPlugin(Star):
                     added = False
 
             if added:
+                if snapshot is None:
+                    raise RuntimeError("数据快照不应该为空。")
                 saved = await self._save_snapshot(snapshot)
                 if saved:
                     yield event.plain_result(
@@ -485,6 +512,8 @@ class ElectricityPlugin(Star):
                     snapshot = None
                     removed = False
             if removed:
+                if snapshot is None:
+                    raise RuntimeError("数据快照不应该为空。")
                 saved = await self._save_snapshot(snapshot)
                 if saved:
                     yield event.plain_result(
