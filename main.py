@@ -49,17 +49,17 @@ def generate_sign(params: Dict[str, Any], secret_key: str) -> str:
     for k in sorted_keys:
         v = cleaned[k]
         if isinstance(v, dict):
-            raw_parts.append(json.dumps(v, separators=(",", ":")))
+            raw_parts.append(json.dumps(v, separators=(",", ":")), ensure_ascii=False)
         else:
             raw_parts.append(str(v))
     raw_str = "|".join(raw_parts) + "|" + secret_key
     return hashlib.md5(raw_str.encode("utf-8")).hexdigest()
 
 
-async def query_balance(
-    item_num: str, node_id: str, timeout: int = 10
+async def request_balance(
+    client: httpx.AsyncClient, item_num: str, node_id: str
 ) -> Dict[str, Any]:
-    """查询电费余额"""
+    """发送查询请求"""
     current_time = time.strftime("%Y%m%d%H%M%S")
     params = {
         "itemNum": item_num,
@@ -68,11 +68,64 @@ async def query_balance(
     }
     sign = generate_sign(params, SECRET_KEY)
     payload = {**params, "sign": sign}
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.post(GETBALANCE_URL, json=payload)
-        resp.raise_for_status()
-        return resp.json()
+    
+    resp = await client.post(GETBALANCE_URL, json=payload)
+    resp.raise_for_status()
+    return resp.json()
 
+async def query_balance_once(
+    item_num: str, node_id: str, timeout: int = 10
+) -> Dict[str, Any]:
+    """普通单次请求"""
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        return await request_balance(client, item_num, node_id)
+    
+class SubscriptionQueryExecutor:
+    """订阅查询执行器"""
+    def __init__(self, timeout: int, retry_times: int, retry_delay: float, retry_backoff: float):
+        self.timeout = timeout
+        self.retry_times = retry_times
+        self.retry_delay = retry_delay
+        self.retry_backoff = retry_backoff
+        self.client: httpx.AsyncClient = None
+
+    async def __aenter__(self):
+        self.client = httpx.AsyncClient(timeout=self.timeout)
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self.client:
+            await self.client.aclose()
+
+    async def query(self, item_num: str, node_id: str) -> Dict[str, Any]:
+        delay = self.retry_delay
+
+        for attempt in range(1, self.retry_times + 1):
+            try:
+                return await request_balance(self.client, item_num, node_id)
+            except (
+                httpx.TimeoutException,
+                httpx.NetworkError,
+                httpx.RemoteProtocolError,
+            ) as e:
+                if attempt == self.retry_times:
+                    logger.error(
+                        "订阅查询最终失败 [%s]：已达到最大重试次数 (%d)。",
+                        node_id,
+                        self.retry_times,
+                    )
+                    raise
+
+                logger.warning(
+                    "订阅查询失败 [%s] (%d/%d)：%s，%.1f 秒后重试。",
+                    node_id,
+                    attempt,
+                    self.retry_times,
+                    e,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+                delay *= self.retry_backoff
 
 def get_zone_info(building: int) -> Tuple[str, str, str]:
     # 优先检查特殊楼栋
@@ -111,7 +164,6 @@ def parse_room_normal(building: int, room_str: str, rule_type: str) -> Dict[str,
     else:
         raise ValueError(f"未知的规则类型：{rule_type}")
 
-
 class ElectricityPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -123,6 +175,11 @@ class ElectricityPlugin(Star):
         self.check_minute = self.config.get("CHECK_MINUTE", 0)
         self.request_timeout = self.config.get("REQUEST_TIMEOUT", 10)
         self.threshold = self.config.get("THRESHOLD", 30.0)
+
+        retry_cfg = self.config.get("SUB_RETRY", {})
+        self.sub_retry_times = retry_cfg.get("retry_times", 2)
+        self.sub_retry_delay = retry_cfg.get("retry_delay", 2.0)
+        self.sub_retry_backoff = retry_cfg.get("retry_backoff", 1.5)
 
         # 1. 使用官方 API 获取持久化数据目录 (返回的是 pathlib.Path 对象)
         plugin_data_dir = StarTools.get_data_dir(self.name)
@@ -250,14 +307,16 @@ class ElectricityPlugin(Star):
         return item_num, node_id, display_name
 
     async def fetch_balance(
-        self, building: int, room_str: str
+        self, building: int, room_str: str, executor: Any = None
     ) -> Tuple[bool, str, float]:
         """核心查询方法，返回 (是否成功, 提示/错误信息, 剩余电量)"""
         try:
             item_num, node_id, display_name = self.resolve_dorm_info(building, room_str)
-            result = await query_balance(
-                item_num, node_id, timeout=self.request_timeout
-            )
+            
+            if executor is None:
+                result = await query_balance_once(item_num, node_id, timeout=self.request_timeout)
+            else:
+                result = await executor.query(item_num, node_id)
 
             if result.get("code") == "1":
                 used_amp_str = result.get("data", {}).get("usedAmp", "0")
@@ -267,14 +326,10 @@ class ElectricityPlugin(Star):
                 msg = result.get("msg", "未知错误")
                 return False, f"❌ {display_name} 查询失败：{msg}", 0.0
 
-        except httpx.TimeoutException:
-            return False, "⏰ 请求超时，请稍后重试。", 0.0
+        except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError):
+            return False, "⏰ 请求超时或网络连接失败，请稍后重试。", 0.0
         except httpx.HTTPStatusError as e:
-            return (
-                False,
-                f"🔌 服务器异常 (HTTP {e.response.status_code})，请稍后重试。",
-                0.0,
-            )
+            return False, f"🔌 服务器异常 (HTTP {e.response.status_code})，请稍后重试。", 0.0
         except ValueError as e:
             return False, f"❌ {str(e)}", 0.0
         except Exception as e:
@@ -290,44 +345,54 @@ class ElectricityPlugin(Star):
         async with self._data_lock:
             subs_copy = {umo: rooms.copy() for umo, rooms in self.subs.items()}
 
-        for umo, rooms in subs_copy.items():
-            if not rooms:
-                continue
+        #用 context manager 包裹批量查询
+        async with SubscriptionQueryExecutor(
+            timeout=self.request_timeout,
+            retry_times=self.sub_retry_times,
+            retry_delay=self.sub_retry_delay,
+            retry_backoff=self.sub_retry_backoff,
+        ) as executor:
 
-            low_balance_msgs = []
-
-            for room_info in rooms:
-                building = room_info.get("building")
-                room = room_info.get("room")
-                cache_key = (building, room)
-
-                if not building or not room:
-                    logger.warning(f"会话 {umo} 的订阅信息不完整，跳过。")
+            for umo, rooms in subs_copy.items():
+                if not rooms:
                     continue
 
-                if cache_key not in query_cache:
-                    query_cache[cache_key] = await self.fetch_balance(building, room)
-                    await asyncio.sleep(5)  # 避免请求过快
+                low_balance_msgs = []
 
-                success, msg, balance = query_cache[cache_key]
-                logger.info(f"从缓存中查询到 {msg}")
+                for room_info in rooms:
+                    building = room_info.get("building")
+                    room = room_info.get("room")
+                    cache_key = (building, room)
 
-                if success and balance < self.threshold:
-                    low_balance_msgs.append(msg)
+                    if not building or not room:
+                        logger.warning(f"会话 {umo} 的订阅信息不完整，跳过。")
+                        continue
 
-            if low_balance_msgs:
-                try:
-                    combined_msg = (
-                        "【电费不足提醒】\n"
-                        + "\n".join(low_balance_msgs)
-                        + "\n请及时充值以免断电！"
-                    )
-                    await self.context.send_message(
-                        umo,
-                        MessageChain().message(combined_msg),
-                    )
-                except Exception as e:
-                    logger.error(f"向会话 {umo} 发送电费提醒失败: {e}")
+                    if cache_key not in query_cache:
+                        query_cache[cache_key] = await self.fetch_balance(
+                            building, room, executor=executor
+                        )
+                        await asyncio.sleep(1)
+
+                    success, msg, balance = query_cache[cache_key]
+                    logger.info(f"从缓存中查询到 {msg}")
+
+                    if success and balance < self.threshold:
+                        low_balance_msgs.append(msg)
+
+                if low_balance_msgs:
+                    try:
+                        combined_msg = (
+                            "【电费不足提醒】\n"
+                            + "\n".join(low_balance_msgs)
+                            + "\n请及时充值以免断电！"
+                        )
+                        await self.context.send_message(
+                            umo,
+                            MessageChain().message(combined_msg),
+                        )
+                    except Exception as e:
+                        logger.error(f"向会话 {umo} 发送电费提醒失败: {e}")
 
     async def daily_check_loop(self):
         """定时循环"""

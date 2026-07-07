@@ -18,5 +18,27 @@
         "description": "低电量提醒阈值（度）",
         "type": "float",
         "default": 30.0
+    },
+    "SUB_RETRY": {
+        "description": "每日订阅查询的重试与网络退避策略配置",
+        "type": "object",
+        "hint": "用于配置当学校电费接口偶发性网络抖动或超时时的自动恢复策略。普通查询不受此配置影响。",
+        "items": {
+            "retry_times": {
+                "description": "最大重试尝试次数",
+                "type": "int",
+                "default": 2
+            },
+            "retry_delay": {
+                "description": "初始重试延迟（秒）",
+                "type": "float",
+                "default": 2.0
+            },
+            "retry_backoff": {
+                "description": "指数退避系数",
+                "type": "float",
+                "default": 1.5
+            }
+        }
     }
 }
