@@ -370,6 +370,7 @@ class ElectricityPlugin(Star):
                     continue
 
                 low_balance_msgs = []
+                failed_msgs = []
 
                 for room_info in rooms:
                     building = room_info.get("building")
@@ -388,6 +389,7 @@ class ElectricityPlugin(Star):
                         await asyncio.sleep(2)
 
                         if not success:  # 如果查询失败，记录错误信息
+                            failed_msgs.append(f"{building}栋{room}室")
                             logger.warning(
                                 f"查询 {building}栋{room}室 失败: {msg}, 跳过处理。"
                             )
@@ -402,19 +404,30 @@ class ElectricityPlugin(Star):
                     if success and balance < self.threshold:
                         low_balance_msgs.append(msg)
 
+                notifications = []
+
                 if low_balance_msgs:
+                    notifications.append(
+                    "【电费不足提醒】\n"
+                    + "\n".join(low_balance_msgs)
+                    + "\n请及时充值以免断电！"
+                )
+                    
+                if failed_msgs:
+                    notifications.append(
+                        f"【查询异常提醒】\n本次查询中有 {len(failed_msgs)} 个宿舍查询失败：\n"
+                        + "\n".join(failed_msgs)
+                    )
+
+                if notifications:
+                    combined_msg = "\n\n".join(notifications)
                     try:
-                        combined_msg = (
-                            "【电费不足提醒】\n"
-                            + "\n".join(low_balance_msgs)
-                            + "\n请及时充值以免断电！"
-                        )
                         await self.context.send_message(
                             umo,
                             MessageChain().message(combined_msg),
                         )
                     except Exception as e:
-                        logger.error(f"向会话 {umo} 发送电费提醒失败: {e}")
+                        logger.error(f"向会话 {umo} 发送提醒失败: {e}")
 
     async def daily_check_loop(self):
         """定时循环"""
