@@ -68,10 +68,11 @@ async def request_balance(
     }
     sign = generate_sign(params, SECRET_KEY)
     payload = {**params, "sign": sign}
-    
+
     resp = await client.post(GETBALANCE_URL, json=payload)
     resp.raise_for_status()
     return resp.json()
+
 
 async def query_balance_once(
     item_num: str, node_id: str, timeout: int = 10
@@ -79,10 +80,14 @@ async def query_balance_once(
     """普通单次请求"""
     async with httpx.AsyncClient(timeout=timeout) as client:
         return await request_balance(client, item_num, node_id)
-    
+
+
 class SubscriptionQueryExecutor:
     """订阅查询执行器"""
-    def __init__(self, timeout: int, retry_times: int, retry_delay: float, retry_backoff: float):
+
+    def __init__(
+        self, timeout: int, retry_times: int, retry_delay: float, retry_backoff: float
+    ):
         self.timeout = timeout
         self.retry_times = retry_times
         self.retry_delay = retry_delay
@@ -127,6 +132,7 @@ class SubscriptionQueryExecutor:
                 await asyncio.sleep(delay)
                 delay *= self.retry_backoff
 
+
 def get_zone_info(building: int) -> Tuple[str, str, str]:
     # 优先检查特殊楼栋
     if building in SPECIAL_BUILDINGS:
@@ -163,6 +169,7 @@ def parse_room_normal(building: int, room_str: str, rule_type: str) -> Dict[str,
         return {"floor": floor, "room_full": room_full, "building_suffix": suffix}
     else:
         raise ValueError(f"未知的规则类型：{rule_type}")
+
 
 class ElectricityPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -312,9 +319,11 @@ class ElectricityPlugin(Star):
         """核心查询方法，返回 (是否成功, 提示/错误信息, 剩余电量)"""
         try:
             item_num, node_id, display_name = self.resolve_dorm_info(building, room_str)
-            
+
             if executor is None:
-                result = await query_balance_once(item_num, node_id, timeout=self.request_timeout)
+                result = await query_balance_once(
+                    item_num, node_id, timeout=self.request_timeout
+                )
             else:
                 result = await executor.query(item_num, node_id)
 
@@ -329,7 +338,11 @@ class ElectricityPlugin(Star):
         except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError):
             return False, "⏰ 请求超时或网络连接失败，请稍后重试。", 0.0
         except httpx.HTTPStatusError as e:
-            return False, f"🔌 服务器异常 (HTTP {e.response.status_code})，请稍后重试。", 0.0
+            return (
+                False,
+                f"🔌 服务器异常 (HTTP {e.response.status_code})，请稍后重试。",
+                0.0,
+            )
         except ValueError as e:
             return False, f"❌ {str(e)}", 0.0
         except Exception as e:
@@ -345,14 +358,13 @@ class ElectricityPlugin(Star):
         async with self._data_lock:
             subs_copy = {umo: rooms.copy() for umo, rooms in self.subs.items()}
 
-        #用 context manager 包裹批量查询
+        # 用 context manager 包裹批量查询
         async with SubscriptionQueryExecutor(
             timeout=self.request_timeout,
             retry_times=self.sub_retry_times,
             retry_delay=self.sub_retry_delay,
             retry_backoff=self.sub_retry_backoff,
         ) as executor:
-
             for umo, rooms in subs_copy.items():
                 if not rooms:
                     continue
@@ -369,12 +381,22 @@ class ElectricityPlugin(Star):
                         continue
 
                     if cache_key not in query_cache:
-                        query_cache[cache_key] = await self.fetch_balance(
+                        (success, msg, balance) = await self.fetch_balance(
                             building, room, executor=executor
                         )
-                        await asyncio.sleep(1)
 
-                    success, msg, balance = query_cache[cache_key]
+                        await asyncio.sleep(2)
+
+                        if not success:  # 如果查询失败，记录错误信息
+                            logger.warning(
+                                f"查询 {building}栋{room}室 失败: {msg}, 跳过处理。"
+                            )
+                            continue
+
+                        query_cache[cache_key] = (success, msg, balance)
+                    else:
+                        success, msg, balance = query_cache[cache_key]
+
                     logger.info(f"从缓存中查询到 {msg}")
 
                     if success and balance < self.threshold:
