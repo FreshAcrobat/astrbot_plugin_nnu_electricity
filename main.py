@@ -27,7 +27,10 @@ if os.path.exists(CONFIG_FILE):
         SPECIAL_BUILDINGS_RAW = config.get("SPECIAL_BUILDINGS", {})
         NEW_NORTH_SUFFIX_RAW = config.get("NEW_NORTH_SUFFIX_MAP", {})
 else:
-    logger.error(f"配置文件 {CONFIG_FILE} 不存在")
+    logger.error(
+        "配置文件 %s 不存在",
+        CONFIG_FILE,
+    )
     raise ValueError("配置文件缺失，请确保 config.json 存在于插件目录下")
 
 # 转换键为整数，便于后续使用
@@ -115,18 +118,18 @@ class SubscriptionQueryExecutor:
             ) as e:
                 if attempt == self.retry_times:
                     logger.error(
-                        "订阅查询最终失败 [%s]：已达到最大重试次数 (%d)。",
+                        "订阅查询最终失败 [%s]: 已达到最大重试次数 (%d)。",
                         node_id,
                         self.retry_times,
                     )
                     raise
 
                 logger.warning(
-                    "订阅查询失败 [%s] (%d/%d)：%s，%.1f 秒后重试。",
+                    "订阅查询失败 [%s] (%d/%d): %s, %.1f 秒后重试。",
                     node_id,
                     attempt,
                     self.retry_times,
-                    e,
+                    str(e),
                     delay,
                 )
                 await asyncio.sleep(delay)
@@ -212,12 +215,16 @@ class ElectricityPlugin(Star):
             try:
                 with open(self.cache_file, "r", encoding="utf-8") as f:
                     self.dongqu_cache = json.load(f)
-                logger.info(f"成功加载东区缓存表，共 {len(self.dongqu_cache)} 个房间。")
-            except Exception as e:
-                logger.error(f"加载东区缓存表失败: {e}")
+                logger.info(
+                    "成功加载东区缓存表，共 %d 个房间。",
+                    len(self.dongqu_cache),
+                )
+            except Exception:
+                logger.exception("加载东区缓存表失败")
         else:
             logger.error(
-                f"东区缓存文件 {self.cache_file} 不存在，东区查询功能可能受限。"
+                "东区缓存文件 %s 不存在，东区查询功能可能受限。",
+                self.cache_file,
             )
 
     def _get_data_snapshot(self) -> Dict[str, Any]:
@@ -233,8 +240,8 @@ class ElectricityPlugin(Star):
         try:
             await asyncio.to_thread(self._write_data_to_file, snapshot)
             return True
-        except Exception as e:
-            logger.error(f"保存插件数据失败: {e}")
+        except Exception:
+            logger.exception("保存插件数据失败")
             return False
 
     def load_plugin_data(self):
@@ -248,9 +255,12 @@ class ElectricityPlugin(Star):
                     self.blacklist = data.get("blacklist", [])
                     self.last_queries = data.get("last_queries", {})
                 logger.info(
-                    f"成功加载插件数据：{len(self.subs)} 个订阅，{len(self.blacklist)} 个黑名单，{len(self.last_queries)} 条查询记录。"
+                    "成功加载插件数据：%d 个订阅，%d 个黑名单，%d 条查询记录。",
+                    len(self.subs),
+                    len(self.blacklist),
+                    len(self.last_queries),
                 )
-            except Exception as e:
+            except Exception:
                 logger.exception("加载插件数据失败")
 
                 self.subs = {}
@@ -272,7 +282,10 @@ class ElectricityPlugin(Star):
                 os.fsync(f.fileno())
 
             os.replace(tmp_file, self.data_file)
-            logger.info(f"插件数据已成功保存到 {self.data_file}")
+            logger.info(
+                "插件数据已成功保存到 %s",
+                self.data_file,
+            )
         finally:
             if tmp_file.exists():
                 try:
@@ -345,8 +358,8 @@ class ElectricityPlugin(Star):
             )
         except ValueError as e:
             return False, f"❌ {str(e)}", 0.0
-        except Exception as e:
-            logger.error(f"查询未知错误: {e}")
+        except Exception:
+            logger.exception("查询未知错误")
             return False, "💥 内部错误，请联系管理员查看日志。", 0.0
 
     async def _perform_daily_checks(self):
@@ -378,7 +391,10 @@ class ElectricityPlugin(Star):
                     cache_key = (building, room)
 
                     if not building or not room:
-                        logger.warning(f"会话 {umo} 的订阅信息不完整，跳过。")
+                        logger.warning(
+                            "会话 %s 的订阅信息不完整，跳过。",
+                            umo,
+                        )
                         continue
 
                     if cache_key not in query_cache:
@@ -391,7 +407,10 @@ class ElectricityPlugin(Star):
                         if not success:  # 如果查询失败，记录错误信息
                             failed_msgs.append(f"{building}栋{room}室")
                             logger.warning(
-                                f"查询 {building}栋{room}室 失败: {msg}, 跳过处理。"
+                                "查询 %s栋%s室 失败: %s, 跳过处理。",
+                                building,
+                                room,
+                                msg,
                             )
                             continue
 
@@ -399,7 +418,10 @@ class ElectricityPlugin(Star):
                     else:
                         success, msg, balance = query_cache[cache_key]
 
-                    logger.info(f"从缓存中查询到 {msg}")
+                    logger.info(
+                        "从缓存中查询到 %s",
+                        msg,
+                    )
 
                     if success and balance < self.threshold:
                         low_balance_msgs.append(msg)
@@ -408,11 +430,11 @@ class ElectricityPlugin(Star):
 
                 if low_balance_msgs:
                     notifications.append(
-                    "【电费不足提醒】\n"
-                    + "\n".join(low_balance_msgs)
-                    + "\n请及时充值以免断电！"
-                )
-                    
+                        "【电费不足提醒】\n"
+                        + "\n".join(low_balance_msgs)
+                        + "\n请及时充值以免断电！"
+                    )
+
                 if failed_msgs:
                     notifications.append(
                         f"【查询异常提醒】\n本次查询中有 {len(failed_msgs)} 个宿舍查询失败：\n"
@@ -426,8 +448,11 @@ class ElectricityPlugin(Star):
                             umo,
                             MessageChain().message(combined_msg),
                         )
-                    except Exception as e:
-                        logger.error(f"向会话 {umo} 发送提醒失败: {e}")
+                    except Exception:
+                        logger.exception(
+                            "向会话 %s 发送提醒失败",
+                            umo,
+                        )
 
     async def daily_check_loop(self):
         """定时循环"""
@@ -450,7 +475,7 @@ class ElectricityPlugin(Star):
 
                 try:
                     await self._perform_daily_checks()
-                except Exception as e:
+                except Exception:
                     logger.exception("执行每日检查时发生错误，将在下次继续尝试。")
         except asyncio.CancelledError:
             logger.info("定时检查任务已取消。")
