@@ -199,9 +199,10 @@ class ElectricityPlugin(Star):
         self.cache_file = plugin_data_dir / "dongqu_cache.json"
 
         self.dongqu_cache = {}
-        self.subs = {}  # 订阅信息: {umo: {"building": x, "room": y}}
+        self.subs = {}  # 订阅信息: {umo: [{"building": x, "room": y}]}
         self.blacklist = []  # 黑名单列表: [umo_1, umo_2...]
         self.last_queries = {}  # 持久化用户查询缓存: {user_id: {"building": x, "room": y}}
+        self.room_queries_info = {}  # 宿舍查询统计: {room_key: {"count": int, "last_query_time": str, "last_query_user": str, "last_query_umo": str}}
 
         self.load_dongqu_cache()
         self.load_plugin_data()
@@ -233,6 +234,7 @@ class ElectricityPlugin(Star):
             "subs": dict(self.subs),
             "blacklist": list(self.blacklist),
             "last_queries": dict(self.last_queries),
+            "room_queries_info": dict(self.room_queries_info),
         }
 
     async def _save_snapshot(self, snapshot: Dict[str, Any]) -> bool:
@@ -254,11 +256,13 @@ class ElectricityPlugin(Star):
                     self.subs = data.get("subs", {})
                     self.blacklist = data.get("blacklist", [])
                     self.last_queries = data.get("last_queries", {})
+                    self.room_queries_info = data.get("room_queries_info", {})
                 logger.info(
-                    "成功加载插件数据：%d 个订阅，%d 个黑名单，%d 条查询记录。",
+                    "成功加载插件数据：%d 个订阅，%d 个黑名单，%d 条查询记录，%d 条房间查询信息。",
                     len(self.subs),
                     len(self.blacklist),
                     len(self.last_queries),
+                    len(self.room_queries_info),
                 )
             except Exception:
                 logger.exception("加载插件数据失败")
@@ -266,6 +270,7 @@ class ElectricityPlugin(Star):
                 self.subs = {}
                 self.blacklist = []
                 self.last_queries = {}
+                self.room_queries_info = {}
 
     def _write_data_to_file(self, data: Dict[str, Any]):
         """同步写入到文件"""
@@ -501,6 +506,29 @@ class ElectricityPlugin(Star):
         yield event.plain_result("\n".join(msg_lines))
         return
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("billstat")
+    async def command_billstat(self, event: AstrMessageEvent):
+        """列出所有房间的查询信息"""
+        async with self._data_lock:
+            room_info_copy = dict(self.room_queries_info)
+
+        if not room_info_copy:
+            yield event.plain_result("ℹ️ 当前没有任何房间查询记录。")
+            return
+
+        msg_lines = ["📋 当前所有房间的查询信息:"]
+        for room_key, info in room_info_copy.items():
+            msg_lines.append(
+                f"{room_key}: 查询次数 {info['count']}, "
+                f"\n最后查询时间 {info['last_query_time']}, "
+                f"\n最后查询用户 {info['last_query_user']}, "
+                f"\n最后查询会话 {info['last_query_umo']}"
+            )
+
+        yield event.plain_result("\n".join(msg_lines))
+        return
+
     @filter.command("bill")
     async def command_bill(self, event: AstrMessageEvent):
         umo = event.unified_msg_origin
@@ -675,8 +703,29 @@ class ElectricityPlugin(Star):
         success, msg, balance = await self.fetch_balance(building, room_str)
 
         if success:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            room_key = f"{building}-{room_str}"
+
             async with self._data_lock:
-                self.last_queries[user_id] = {"building": building, "room": room_str}
+                self.last_queries[user_id] = {
+                    "building": building,
+                    "room": room_str,
+                }
+
+                record = self.room_queries_info.setdefault(
+                    room_key,
+                    {
+                        "count": 0,
+                        "last_query_time": "",
+                        "last_query_user": "",
+                        "last_query_umo": "",
+                    },
+                )
+                record["count"] += 1
+                record["last_query_time"] = now
+                record["last_query_user"] = user_id
+                record["last_query_umo"] = umo
+
                 snapshot = self._get_data_snapshot()
             await self._save_snapshot(snapshot)
 
