@@ -488,7 +488,7 @@ class ElectricityPlugin(Star):
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("suball")
-    async def test(self, event: AstrMessageEvent):
+    async def command_suball(self, event: AstrMessageEvent):
         """列出所有会话的订阅"""
         async with self._data_lock:
             subs_copy = {umo: rooms.copy() for umo, rooms in self.subs.items()}
@@ -733,7 +733,7 @@ class ElectricityPlugin(Star):
         return
 
     @filter.command("b")
-    async def quick_query(self, event: AstrMessageEvent):
+    async def command_b(self, event: AstrMessageEvent):
         """快速查询当前用户上次调用的宿舍"""
         umo = event.unified_msg_origin
         user_id = str(event.message_obj.sender.user_id)
