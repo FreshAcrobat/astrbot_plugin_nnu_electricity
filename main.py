@@ -367,6 +367,35 @@ class ElectricityPlugin(Star):
             logger.exception("查询未知错误")
             return False, "💥 内部错误，请联系管理员查看日志。", 0.0
 
+    async def update_room_query_info(
+        self,
+        building: int,
+        room_str: str,
+        user_id: str,
+        umo: str,
+        balance: float,
+    ):
+        """更新房间查询信息"""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        room_key = f"{building}-{room_str}"
+
+        record = self.room_queries_info.setdefault(
+            room_key,
+            {
+                "count": 0,
+                "last_query_time": "",
+                "last_query_user": "",
+                "last_query_umo": "",
+                "last_query_balance": 0.0,
+            },
+        )
+
+        record["count"] += 1
+        record["last_query_time"] = now
+        record["last_query_user"] = user_id
+        record["last_query_umo"] = umo
+        record["last_query_balance"] = balance
+
     async def _perform_daily_checks(self):
         """订阅检查与推送逻辑"""
         logger.info("开始执行电费定时订阅检查...")
@@ -407,7 +436,7 @@ class ElectricityPlugin(Star):
                             building, room, executor=executor
                         )
 
-                        await asyncio.sleep(2)
+                        await asyncio.sleep(5)
 
                         if not success:  # 如果查询失败，记录错误信息
                             failed_msgs.append(f"{building}栋{room}室")
@@ -703,28 +732,19 @@ class ElectricityPlugin(Star):
         success, msg, balance = await self.fetch_balance(building, room_str)
 
         if success:
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            room_key = f"{building}-{room_str}"
-
             async with self._data_lock:
                 self.last_queries[user_id] = {
                     "building": building,
                     "room": room_str,
                 }
 
-                record = self.room_queries_info.setdefault(
-                    room_key,
-                    {
-                        "count": 0,
-                        "last_query_time": "",
-                        "last_query_user": "",
-                        "last_query_umo": "",
-                    },
+                await self.update_room_query_info(
+                    building,
+                    room_str,
+                    user_id,
+                    umo,
+                    balance,
                 )
-                record["count"] += 1
-                record["last_query_time"] = now
-                record["last_query_user"] = user_id
-                record["last_query_umo"] = umo
 
                 snapshot = self._get_data_snapshot()
             await self._save_snapshot(snapshot)
@@ -758,7 +778,19 @@ class ElectricityPlugin(Star):
         room_str = record["room"]
 
         yield event.plain_result("⚡ 正在快速查询您上次记录的宿舍...")
-        success, msg, _ = await self.fetch_balance(building, room_str)
+        success, msg, balance = await self.fetch_balance(building, room_str)
+        if success:
+            async with self._data_lock:
+                await self.update_room_query_info(
+                    building,
+                    room_str,
+                    user_id,
+                    umo,
+                    balance,
+                )
+
+                snapshot = self._get_data_snapshot()
+            await self._save_snapshot(snapshot)
         yield event.plain_result(msg)
         return
 
