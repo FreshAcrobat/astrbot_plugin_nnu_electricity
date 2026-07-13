@@ -202,7 +202,7 @@ class ElectricityPlugin(Star):
         self.subs = {}  # 订阅信息: {umo: [{"building": x, "room": y}]}
         self.blacklist = []  # 黑名单列表: [umo_1, umo_2...]
         self.last_queries = {}  # 持久化用户查询缓存: {user_id: {"building": x, "room": y}}
-        self.room_queries_info = {}  # 宿舍查询统计: {room_key: {"count": int, "last_query_time": str, "last_query_user": str, "last_query_umo": str}}
+        self.room_queries_info = {}  # 宿舍查询统计: {room_key: {"count": int, "last_query_time": str, "last_query_user": str, "last_query_umo": str, "last_query_balance": float}}
 
         self.load_dongqu_cache()
         self.load_plugin_data()
@@ -395,6 +395,33 @@ class ElectricityPlugin(Star):
         record["last_query_user"] = user_id
         record["last_query_umo"] = umo
         record["last_query_balance"] = balance
+
+    async def append_history_cache(
+        self,
+        building: int,
+        room_str: str,
+        msg: str,
+    ) -> str:
+        room_key = f"{building}-{room_str}"
+
+        async with self._data_lock:
+            history = self.room_queries_info.get(room_key)
+
+        if not history:
+            return msg
+
+        last_time = history.get("last_query_time")
+        if not last_time:
+            return msg
+
+        last_balance = history.get("last_query_balance", "未知")
+
+        return (
+            msg
+            + "\n\n📋 [历史缓存] 该宿舍上一次成功查询信息："
+            + f"\n⏰ 查询时间：{last_time}"
+            + f"\n⚡️ 历史电费：{last_balance} 度"
+        )
 
     async def _perform_daily_checks(self):
         """订阅检查与推送逻辑"""
@@ -748,6 +775,12 @@ class ElectricityPlugin(Star):
 
                 snapshot = self._get_data_snapshot()
             await self._save_snapshot(snapshot)
+        else:
+            msg = await self.append_history_cache(
+                building,
+                room_str,
+                msg,
+            )
 
         yield event.plain_result(msg)
         return
@@ -791,6 +824,13 @@ class ElectricityPlugin(Star):
 
                 snapshot = self._get_data_snapshot()
             await self._save_snapshot(snapshot)
+        else:
+            msg = await self.append_history_cache(
+                building,
+                room_str,
+                msg,
+            )
+
         yield event.plain_result(msg)
         return
 
