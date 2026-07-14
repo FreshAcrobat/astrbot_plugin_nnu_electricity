@@ -52,7 +52,7 @@ def generate_sign(params: Dict[str, Any], secret_key: str) -> str:
     for k in sorted_keys:
         v = cleaned[k]
         if isinstance(v, dict):
-            raw_parts.append(json.dumps(v, separators=(",", ":")), ensure_ascii=False)
+            raw_parts.append(json.dumps(v, separators=(",", ":"), ensure_ascii=False))
         else:
             raw_parts.append(str(v))
     raw_str = "|".join(raw_parts) + "|" + secret_key
@@ -367,7 +367,7 @@ class ElectricityPlugin(Star):
             logger.exception("查询未知错误")
             return False, "💥 内部错误，请联系管理员查看日志。", 0.0
 
-    async def update_room_query_info(
+    def update_room_query_info(
         self,
         building: int,
         room_str: str,
@@ -765,7 +765,7 @@ class ElectricityPlugin(Star):
                     "room": room_str,
                 }
 
-                await self.update_room_query_info(
+                self.update_room_query_info(
                     building,
                     room_str,
                     user_id,
@@ -814,7 +814,7 @@ class ElectricityPlugin(Star):
         success, msg, balance = await self.fetch_balance(building, room_str)
         if success:
             async with self._data_lock:
-                await self.update_room_query_info(
+                self.update_room_query_info(
                     building,
                     room_str,
                     user_id,
