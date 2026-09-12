@@ -4,6 +4,11 @@ main.py - 插件入口
 
 import asyncio
 
+try:
+    from aiocqhttp.exceptions import ApiNotAvailable
+except ImportError: 
+    ApiNotAvailable = ()
+
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.star import Context, Star, StarTools
@@ -60,14 +65,25 @@ class ElectricityPlugin(Star):
             self._service.daily_check_loop(self._send_reminder)
         )
 
-    async def _send_reminder(self, umo: str, message: str):
+    async def _send_reminder(self, umo: str, message: str) -> bool:
         try:
-            await self.context.send_message(
+            remind_success = await self.context.send_message(
                 umo,
                 MessageChain().message(message),
             )
+        except ApiNotAvailable:
+            logger.warning(
+                "消息平台未连接，发送失败: %s", umo
+            )
+            return False
         except Exception:
             logger.exception("向会话 %s 发送提醒失败", umo)
+            return False
+        if not remind_success:
+            logger.warning(
+                "找不到匹配的平台，提醒未送达: %s", umo
+            )
+        return remind_success
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("suball")
