@@ -96,11 +96,11 @@ class CommandHandler:
         if len(parts) == 1:
             help_msg = (
                 "🔌 电费查询插件使用帮助:\n"
-                "• /bill <楼栋> <宿舍> - 查询电费\n"
-                "• /b - 快速查询上次查找的宿舍\n"
-                "• /bill sub <楼栋> <宿舍> - 订阅每日低电量提醒\n"
-                "• /bill unsub <楼栋> <宿舍> - 取消订阅\n"
-                "• /bill on/off - 启用/禁用当前群组响应"
+                "• bill <楼栋> <宿舍> - 查询电费\n"
+                "• b - 快速查询上次查找的宿舍\n"
+                "• bill sub <楼栋> <宿舍> - 订阅每日低电量提醒\n"
+                "• bill unsub <楼栋> <宿舍> - 取消订阅\n"
+                "• bill on/off - 启用/禁用当前群组响应"
             )
             yield event.plain_result(help_msg)
             return
@@ -111,7 +111,7 @@ class CommandHandler:
         if action_or_building.lower() == "sub":
             if len(parts) < 4:
                 yield event.plain_result(
-                    "❌ 参数不足！请使用格式：/bill sub 楼栋号 宿舍号"
+                    "❌ 参数不足！请使用格式：bill sub 楼栋号 宿舍号"
                 )
                 return
             building_str, room_str = parts[2], parts[3]
@@ -167,7 +167,7 @@ class CommandHandler:
         elif action_or_building.lower() == "unsub":
             if len(parts) < 4:
                 yield event.plain_result(
-                    "❌ 参数不足！请使用格式：/bill unsub 楼栋号 宿舍号"
+                    "❌ 参数不足！请使用格式：bill unsub 楼栋号 宿舍号"
                 )
                 return
             building_str, room_str = parts[2], parts[3]
@@ -207,7 +207,7 @@ class CommandHandler:
 
         # ---------------- 3. 常规电费查询 ----------------
         if len(parts) < 3:
-            yield event.plain_result("❌ 参数不足！\n正确格式：/bill 楼栋号 宿舍号")
+            yield event.plain_result("❌ 参数不足！\n正确格式：bill 楼栋号 宿舍号")
             return
 
         building_str, room_str = parts[1], parts[2]
@@ -268,7 +268,7 @@ class CommandHandler:
         async with self._store.lock:
             if user_id not in self._store.last_queries:
                 yield event.plain_result(
-                    "❌ 您还没有历史查询记录，请先使用 /bill <楼栋> <宿舍> 查询一次。"
+                    "❌ 您还没有历史查询记录，请先使用 bill <楼栋> <宿舍> 查询一次。"
                 )
                 return
 
